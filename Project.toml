@@ -3,6 +3,9 @@ uuid = "c9884585-5b09-4ff3-881e-34974e198105"
 authors = ["Giacomo Bastianel"]
 version = "1.0.0-DEV"
 
+[deps]
+HSL_jll = "017b0a0e-03f4-516a-9b91-836bbd1904dd"
+
 [compat]
 julia = "1.6.7"
 

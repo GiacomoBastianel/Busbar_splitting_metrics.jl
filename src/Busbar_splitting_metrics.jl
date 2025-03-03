@@ -7,7 +7,6 @@ import PowerModelsACDC; const _PMACDC = PowerModelsACDC
 import PowerModels; const _PM = PowerModels
 import PowerModelsTopologicalActionsII; const _PMTP = PowerModelsTopologicalActionsII
 import InfrastructureModels; const _IM = InfrastructureModels
-import CbaOPF
 import Feather
 import CSV
 using DataFrames
