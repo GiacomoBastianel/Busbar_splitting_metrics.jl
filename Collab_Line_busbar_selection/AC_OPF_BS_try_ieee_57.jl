@@ -3,40 +3,31 @@ using PowerModelsACDC; const _PMACDC = PowerModelsACDC
 using PowerModelsTopologicalActionsII; const _PMTP = PowerModelsTopologicalActionsII
 using Gurobi, JuMP, HiGHS, DataFrames, CSV, Feather, JSON, Ipopt, Plots, StatsBase, Juniper, Statistics, PowerPlots
 
-mip_gap = 1e-5
-gurobi = JuMP.optimizer_with_attributes(Gurobi.Optimizer,"QCPDual" => 1, "time_limit" => 600,"MIPgap" => mip_gap, "BarHomogeneous" => 1)#,"BarQCPConvTol"=>1e-4)#r, "ScaleFlag"=>2, "NumericFocus"=>2,,"BarQCPConvTol"=>1e-3,) 
-#ipopt = JuMP.optimizer_with_attributes(Ipopt.Optimizer, "print_level" => 2,"linear_solver" => "ma97")
-ipopt = JuMP.optimizer_with_attributes(Ipopt.Optimizer, "print_level" => 2)
+
+gurobi = JuMP.optimizer_with_attributes(Gurobi.Optimizer, "time_limit" => 600,"MIPgap" => 5e-5, "BarHomogeneous" => 1)#,"QCPDual" => 1,"BarQCPConvTol"=>1e-4)#r, "ScaleFlag"=>2, "NumericFocus"=>2,,"BarQCPConvTol"=>1e-3,) 
+ipopt = JuMP.optimizer_with_attributes(Ipopt.Optimizer, "print_level" => 2)#,"linear_solver" => "ma97")
 juniper = JuMP.optimizer_with_attributes(Juniper.Optimizer, "nl_solver" => ipopt, "mip_solver" => gurobi, "time_limit" => 600)
 highs = JuMP.optimizer_with_attributes(HiGHS.Optimizer)#, "presolve" => 0, "presolve_dual" => 0, "simplex_dual_edge_weight_strategy" => 0, "simplex_primal_edge_weight_strategy" => 0, "simplex_price_strategy" => 0, "simplex_iteration_limit" => 100000, "simplex_perturbation" => 50.0, "simplex_dual_feasibility_tolerance" => 1.0e-9, "simplex_primal_feasibility_tolerance" => 1.0e-9, "simplex_objective_tolerance" => 1.0e-9, "simplex_infinite_bound" => 1.0e20, "simplex_infinite_cost" => 1.0e20)
-
-s = Dict("output" => Dict("duals" => false))
-s_dual = Dict("output" => Dict("duals" => true))
-
 ##################################################################
 ## Processing input data
 input_folder = @__DIR__
-results_folder = "/Users/giacomobastianel/Library/CloudStorage/OneDrive-KULeuven/Busbar_splitting_metrics_results"
 
 # Belgium grid without energy island
-test_case_file = joinpath(dirname(input_folder),"test_cases/pglib_opf_case118_ieee.m")
+test_case_file = joinpath(dirname(input_folder),"test_cases/pglib_opf_case57_ieee.m")
 test_case = _PM.parse_file(test_case_file)
 
 s_dual = Dict("output" => Dict("duals" => true))
 s = Dict("output" => Dict("duals" => false))
-
 result_opf = _PM.solve_opf(test_case,ACPPowerModel,ipopt,setting=s_dual)
-result_opf_lpac = _PM.solve_opf(test_case,LPACCPowerModel,gurobi,setting=s_dual)
+result_opf_lpac = _PM.solve_opf(test_case,LPACCPowerModel,gurobi,setting=s)
 
-
-#powerplot(test_case)
 
 for (b_id,b) in test_case["bus"]
-    println(b_id," ",result_opf_lpac["solution"]["bus"][b_id]["lam_kcl_r"])
+    println(b_id," ",result_opf["solution"]["bus"][b_id]["lam_kcl_r"])
 end
 duals = []
 for (b_id,b) in test_case["bus"]
-    push!(duals,[parse(Int64,b_id),abs(result_opf["solution"]["bus"][b_id]["lam_kcl_r"])])
+    push!(duals,[parse(Int64,b_id),result_opf["solution"]["bus"][b_id]["lam_kcl_r"]])
 end
 sorted_duals = sort(duals, by = x -> x[2], rev = true)
 
@@ -135,7 +126,6 @@ function split_one_bus_per_time_with_N_1_check(test_case,results_dict,results_di
         end
     end
 end
-
 
 function prepare_AC_grid_feasibility_check(result_dict, input_dict, input_ac_check, switch_couples, extremes_dict, input_base)
     orig_buses = maximum(parse.(Int, keys(input_base["bus"])))
@@ -442,10 +432,22 @@ function prepare_AC_feasibility_check(result_dict, input_dict, input_ac_check, s
 end
 
 ###############################################################################
-result_bs_ii = Dict{String,Any}()
+result_bs = Dict{String,Any}()
 results_ac_check = Dict{String,Any}()
 results_lpac_check = Dict{String,Any}()
-split_one_bus_per_time(test_case,result_bs_ii,results_ac_check,results_lpac_check)
+split_one_bus_per_time(test_case,result_bs,results_ac_check,results_lpac_check)
+
+lpac_opf_check = [results_lpac_check["$b_id"]["objective"] for (b_id,b) in test_case["bus"] if result_bs["$b_id"]["termination_status"] == JuMP.OPTIMAL]
+lpac_bs_check = [result_bs["$b_id"]["objective"] for (b_id,b) in test_case["bus"] if result_bs["$b_id"]["termination_status"] == JuMP.OPTIMAL]
+
+plot(lpac_opf_check)
+plot(lpac_bs_check)
+
+
+result_bs_tree = Dict{String,Any}()
+results_ac_check_tree = Dict{String,Any}()
+results_lpac_check_tree = Dict{String,Any}()
+busbar_splitting_tree(test_case,result_bs_tree,results_ac_check_tree,result_opf_lpac["objective"])
 
 
 duals_plot = []
@@ -454,21 +456,21 @@ obj_plot_percentage = []
 obj_plot_b_id = []
 
 for (b_id,b) in test_case["bus"]
-    if result_bs_ii["$b_id"]["termination_status"] == JuMP.OPTIMAL
+    if result_bs["$b_id"]["termination_status"] == JuMP.OPTIMAL
         push!(duals_plot,result_opf["solution"]["bus"][b_id]["lam_kcl_r"])
-        push!(obj_plot,result_opf_lpac["objective"]-result_bs_ii["$b_id"]["objective"])
-        push!(obj_plot_percentage,((result_opf_lpac["objective"]-result_bs_ii["$b_id"]["objective"])/result_opf_lpac["objective"])*100)
-        push!(obj_plot_b_id,[b_id,result_opf_lpac["objective"]-result_bs_ii["$b_id"]["objective"]])
+        push!(obj_plot,result_opf_lpac["objective"]-result_bs["$b_id"]["objective"])
+        push!(obj_plot_percentage,((result_opf_lpac["objective"]-result_bs["$b_id"]["objective"])/result_opf_lpac["objective"])*100)
+        push!(obj_plot_b_id,[b_id,result_opf_lpac["objective"]-result_bs["$b_id"]["objective"]])
     end
 end
 
 
-scatter(obj_plot,duals_plot,xlabel = "Benefit of busbar splitting compared to OPF [\$]",ylabel = "Duals [\$/MWh]",legend = false,grid = :none,ylims = (-3700,-2000),title = "Splitting one bus per time, case 118")
+scatter(obj_plot,duals_plot,xlabel = "Benefit of busbar splitting compared to OPF [\$]",ylabel = "Duals [\$/MWh]",legend = false,grid = :none,ylims = (-4000,-2000),title = "Splitting one bus per time, case 57")
 x_vertical_line = 0.0*ones(length(duals_plot))
 vertical_line = -200*collect(1:length(duals_plot))
 plot!(x_vertical_line,vertical_line,linecolor = :red)
-savefig(joinpath(results_folder,"case_118/split_one_bus_per_time.pdf"))
-savefig(joinpath(results_folder,"case_118/split_one_bus_per_time.svg"))
+savefig(joinpath(results_folder,"case_57/split_one_bus_per_time.pdf"))
+savefig(joinpath(results_folder,"case_57/split_one_bus_per_time.svg"))
 
 findmax(obj_plot)
 sorted_bs = sort(obj_plot_b_id, by = x -> x[2], rev = true)
@@ -481,16 +483,31 @@ plot!(x_vertical_line,vertical_line,linecolor = :red)
 
 
 ###########
-bs_json = JSON.json(result_bs_ii)
-open(joinpath(results_folder,"case_118/split_one_bus_per_time.json"),"w") do f 
+results_folder = "/Users/giacomobastianel/Library/CloudStorage/OneDrive-KULeuven/Busbar_splitting_metrics_results"
+
+bs_json = JSON.json(result_bs)
+open(joinpath(results_folder,"case_57/split_one_bus_per_time.json"),"w") do f 
     write(f, bs_json) 
 end
 ac_check_json = JSON.json(results_ac_check)
-open(joinpath(results_folder,"case_118/ac_check_split_one_bus_per_time.json"),"w") do f 
+open(joinpath(results_folder,"case_57/ac_check_split_one_bus_per_time.json"),"w") do f 
     write(f, ac_check_json) 
 end
 lpac_check_json = JSON.json(results_lpac_check)
-open(joinpath(results_folder,"case_118/lpac_check_split_one_bus_per_time.json"),"w") do f 
+open(joinpath(results_folder,"case_57/lpac_check_split_one_bus_per_time.json"),"w") do f 
+    write(f, lpac_check_json) 
+end
+
+bs_json = JSON.json(result_bs_tree)
+open(joinpath(results_folder,"case_57/split_tree.json"),"w") do f 
+    write(f, bs_json) 
+end
+ac_check_json = JSON.json(results_ac_check_tree)
+open(joinpath(results_folder,"case_57/ac_check_split_tree.json"),"w") do f 
+    write(f, ac_check_json) 
+end
+lpac_check_json = JSON.json(results_lpac_check_tree)
+open(joinpath(results_folder,"case_57/lpac_check_split_tree.json"),"w") do f 
     write(f, lpac_check_json) 
 end
 
@@ -498,7 +515,7 @@ optimal_results = Dict{String,Any}()
 optimal_results_ac_check = Dict{String,Any}()
 optimal_results_lpac_check = Dict{String,Any}()
 buses = []
-for (b_id, result) in result_bs_ii
+for (b_id, result) in result_bs
     if result["termination_status"] == JuMP.OPTIMAL
         optimal_results[b_id] = result
         optimal_results_ac_check[b_id] = results_ac_check[b_id]
@@ -507,130 +524,9 @@ for (b_id, result) in result_bs_ii
     end
 end
 
-obj_bs = [optimal_results["$b_id"]["objective"] for (b_id,b) in test_case["bus"] if result_bs_ii["$b_id"]["termination_status"] == JuMP.OPTIMAL]
-obj_bs_lpac_check = [optimal_results["$b_id"]["objective"] for (b_id,b) in test_case["bus"] if result_bs_ii["$b_id"]["termination_status"] == JuMP.OPTIMAL]
+obj_bs = [optimal_results["$b_id"]["objective"] for (b_id,b) in test_case["bus"] if result_bs["$b_id"]["termination_status"] == JuMP.OPTIMAL]
+obj_bs_lpac_check = [optimal_results["$b_id"]["objective"] for (b_id,b) in test_case["bus"] if result_bs["$b_id"]["termination_status"] == JuMP.OPTIMAL]
 obj = result_opf_lpac["objective"].*ones(length(obj_bs))
 
-obj_bs_ac_check = [optimal_results_ac_check["$b_id"]["objective"] for (b_id,b) in test_case["bus"] if result_bs_ii["$b_id"]["termination_status"] == JuMP.OPTIMAL]
+obj_bs_ac_check = [optimal_results_ac_check["$b_id"]["objective"] for (b_id,b) in test_case["bus"] if result_bs["$b_id"]["termination_status"] == JuMP.OPTIMAL]
 obj_ac = result_opf["objective"].*ones(length(obj_bs))
-
-
-findmax(obj - obj_bs_lpac_check)
-buses[56]
-optimal_results["69"]["solution"]
-
-
-plot(obj - obj_bs_lpac_check)
-plot(obj_ac - obj_bs_ac_check)
-
-
-bs_benefit_percentage = [((obj[i] .- obj_bs_lpac_check[i])/obj[i])*100 for i in 1:length(obj)]
-plot(bs_benefit_percentage)
-plot!(line_0_01,linestyle = :dash,linecolor = :red)
-
-################################################################
-result_bs_n_1 = Dict{String,Any}()
-results_ac_n_1_check = Dict{String,Any}()
-results_lpac_n_1_check = Dict{String,Any}()
-split_one_bus_per_time_with_N_1_check(test_case,result_bs_n_1,results_ac_n_1_check,results_lpac_n_1_check)
-
-bs_json = JSON.json(result_bs_n_1)
-open(joinpath(results_folder,"case_118/split_one_bus_per_time_n_1_check.json"),"w") do f 
-    write(f, bs_json) 
-end
-ac_check_json = JSON.json(results_ac_n_1_check)
-open(joinpath(results_folder,"case_118/ac_check_split_one_bus_per_time_n_1_check.json"),"w") do f 
-    write(f, ac_check_json) 
-end
-lpac_check_json = JSON.json(results_lpac_n_1_check)
-open(joinpath(results_folder,"case_118/lpac_check_split_one_bus_per_time_n_1_check.json"),"w") do f 
-    write(f, lpac_check_json) 
-end
-
-okay_buses = []
-for l in keys(results_ac_n_1_check)
-    if haskey(results_ac_n_1_check[l],"feasibility_check")
-        term_status = []
-        for fc in keys(results_ac_n_1_check[l]["feasibility_check"])
-            push!(term_status,results_ac_n_1_check[l]["feasibility_check"][fc]["termination_status"])
-        end
-        if length(countmap(term_status)) > 1
-            push!(okay_buses,l)
-        end
-    end
-end
-
-okay_buses_lpac = []
-for l in keys(results_lpac_n_1_check)
-    if haskey(results_lpac_n_1_check[l],"feasibility_check")
-        term_status = []
-        for fc in keys(results_lpac_n_1_check[l]["feasibility_check"])
-            push!(term_status,results_lpac_n_1_check[l]["feasibility_check"][fc]["termination_status"])
-        end
-        push!(okay_buses_lpac,countmap(term_status))
-    end
-end
-
-################################################################
-
-result_bs_ii_tree = Dict{String,Any}()
-results_ac_check_tree = Dict{String,Any}()
-results_lpac_check_tree = Dict{String,Any}()
-busbar_splitting_tree(test_case,result_bs_ii_tree,results_ac_check_tree,results_lpac_check_tree["objective"])
-
-
-for (b_id,b) in test_case["bus"]
-    println([b_id,result_bs_ii[b_id]["objective"]])
-end
-
-
-bs_benefit_percentage_ac_check = [((obj_ac[i] .- obj_bs_ac_check[i])/obj[i])*100 for i in 1:length(obj)]
-plot(bs_benefit_percentage_ac_check,ylims = [-0.1,0.5],yticks = -0.1:0.1:0.5)
-line_0_01 = -ones(length(bs_benefit_percentage_ac_check)).*0.001
-plot!(line_0_01,linestyle = :dash,linecolor = :red)
-
-maximum(obj_ac - obj_bs_ac_check)
-findmin(obj_ac - obj_bs_ac_check)
-
-43/obj_ac[1]
-
-results_bs_sp = _PMTP.run_acdcsw_AC_grid_big_M_sp(test_case_bs,formulation,optimizer)
-
-test_case_bs_check = deepcopy(test_case_bs)
-prepare_AC_grid_feasibility_check(results_bs,test_case_bs_check_auxiliary,test_case_bs_check,switches_couples_ac,extremes_ZILs_ac,test_case)
-result_opf_check = _PMACDC.run_acdcopf(test_case_bs_check,ACPPowerModel,ipopt; setting = s)
-
-
-Results_N_minus_1 = Dict{String,Any}()
-@time N_minus_1_checks(test_case_bs_check,Results_N_minus_1)
-
-
-powerplot(test_case_bs_check)
-
-##################################################################################
-splitted_bus_ac = 69 #-> simulation: 95s, N-1 check 22.28s (all the lines! + everything saved in Dict) -> < 2 mins vs 4+ mins comparable to Heidarifar et al. 2021
-
-optimizer = gurobi
-formulation = LPACCPowerModel
-
-test_case_bs = deepcopy(test_case)
-test_case_bs,  switches_couples_ac,  extremes_ZILs_ac  = _PMTP.AC_busbar_split_AC_grid(test_case_bs,splitted_bus_ac)
-test_case_bs_check = deepcopy(test_case_bs)
-test_case_bs_check_auxiliary = deepcopy(test_case_bs)
-results_bs = _PMTP.run_acdcsw_AC_grid_big_M(test_case_bs,formulation,optimizer)
-
-
-_PMTP.prepare_AC_grid_feasibility_check(results_bs,test_case_bs_check_auxiliary,test_case_bs_check,switches_couples_ac,extremes_ZILs_ac,test_case)
-result_opf_check = _PMACDC.run_acdcopf(test_case_bs_check,ACPPowerModel,ipopt; setting = s)
-
-
-println("Benefits from splitting busbar 69,103,32,77,59 is $((result_opf["objective"] - result_opf_check["objective"])), $((result_opf["objective"]-result_opf_check["objective"])/(result_opf["objective"])*100)%, with MIPgap $(mip_gap*100) %")
-
-Results_N_minus_1 = Dict{String,Any}()
-@time N_minus_1_checks(test_case_bs_check,Results_N_minus_1)
-
-
-obj = [Results_N_minus_1["$br_id"]["objective"] for (br_id,br) in test_case_bs_check["branch"]]
-termination_status = [Results_N_minus_1["$br_id"]["termination_status"] for (br_id,br) in test_case_bs_check["branch"]]
-
-powerplot(test_case_bs_check)
